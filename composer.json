@@ -1,0 +1,37 @@
+{
+    "name": "reachweb/statamic-keila-integration",
+    "autoload": {
+        "psr-4": {
+            "Reachweb\\StatamicKeilaIntegration\\": "src"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "Reachweb\\StatamicKeilaIntegration\\Tests\\": "tests"
+        }
+    },
+    "require": {
+        "statamic/cms": "^6.0"
+    },
+    "require-dev": {
+        "orchestra/testbench": "^10.8"
+    },
+    "config": {
+        "allow-plugins": {
+            "pixelfear/composer-dist-plugin": true
+        }
+    },
+    "extra": {
+        "statamic": {
+            "name": "Statamic Keila Integration",
+            "description": "Statamic Keila Integration addon"
+        },
+        "laravel": {
+            "providers": [
+                "Reachweb\\StatamicKeilaIntegration\\ServiceProvider"
+            ]
+        }
+    },
+    "minimum-stability": "dev",
+    "prefer-stable": true
+}
