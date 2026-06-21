@@ -1,0 +1,17 @@
+tabs:
+  main:
+    sections:
+      -
+        fields:
+          -
+            handle: email
+            field:
+              type: text
+              input_type: email
+              validate:
+                - required
+                - email
+          -
+            handle: newsletter_opt_in
+            field:
+              type: toggle
