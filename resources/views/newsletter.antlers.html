@@ -1,0 +1,132 @@
+{{#
+    Newsletter sign-up — self-contained, publishable Alpine partial.
+
+    Wraps the native `newsletter` form and submits it via `fetch` for inline,
+    no-reload feedback. Progressive enhancement: with JS disabled the form posts
+    normally and Statamic's `{{ if success }}` / `{{ if errors }}` blocks handle
+    feedback after a reload.
+
+    Self-contained: the Alpine component lives inline in `x-data`, so publishing
+    this single file is enough — no JS import or build step. Alpine (already on
+    the page) picks it up.
+
+    Toast-aware, not toast-dependent: on success it optionally pushes to a global
+    `$store.toasts` and dispatches a `newsletter:subscribed` event — both degrade
+    gracefully on sites without a toast store.
+
+    Customise after publishing
+    (`php artisan vendor:publish --tag=statamic-keila-integration-views`):
+      - Re-style with your own classes (the defaults below use generic, portable
+        Tailwind core utilities so they render on any site).
+      - Copy is hardcoded English run through `| trans`; translate it via your
+        lang files, or replace with your own strings / globals.
+      - Match the form handle (`form:newsletter`) and the opt-in field `name`
+        (`newsletter_opt_in`) to your own form blueprint.
+#}}
+<div
+    x-data="{
+        state: 'idle',
+        message: '',
+        async submit(event) {
+            if (this.state === 'loading') { return; }
+            const form = event.target;
+            this.state = 'loading';
+            this.message = '';
+            let data = {};
+            try {
+                const response = await fetch(form.action, {
+                    method: 'POST',
+                    headers: { 'X-Requested-With': 'XMLHttpRequest', Accept: 'application/json' },
+                    body: new FormData(form),
+                });
+                data = await response.json().catch(() => ({}));
+                if (response.ok && data.success) { this.succeed(form); return; }
+            } catch (error) {
+                /* Network / parse failure — fall through to the error state. */
+            }
+            this.fail(data);
+        },
+        succeed(form) {
+            form.reset();
+            this.state = 'success';
+            this.message = this.$root.dataset.success || '';
+            this.$store.toasts?.push(this.message, 'success');
+            this.$dispatch('newsletter:subscribed', { message: this.message });
+            this.$nextTick(() => this.$refs.success?.focus());
+        },
+        fail(data) {
+            this.state = 'error';
+            this.message = (data.error && Object.values(data.error)[0]) || this.$root.dataset.error || '';
+        },
+    }"
+    data-success="{{ 'Thanks for subscribing.' | trans }}"
+    data-error="{{ 'Something went wrong. Please try again.' | trans }}"
+    x-on:submit.prevent="submit($event)"
+>
+    {{ form:newsletter class="flex flex-col gap-4" }}
+        {{ if success }}
+            {{# No-JS fallback: shown after a normal POST + reload. #}}
+            <p class="text-sm text-green-700">{{ success }}</p>
+        {{ else }}
+            {{# JS success state (AJAX path). Hidden without JS via x-cloak. #}}
+            <div
+                x-ref="success"
+                x-show="state === 'success'"
+                x-cloak
+                tabindex="-1"
+                role="status"
+                aria-live="polite"
+                class="rounded-lg border border-green-200 bg-green-50 px-4 py-3 text-sm text-green-800"
+                x-text="message"
+            ></div>
+
+            {{# Fields — hidden by Alpine once subscribed; always visible without JS. #}}
+            <div x-show="state !== 'success'" class="flex flex-col gap-3">
+                <div class="flex flex-wrap gap-2">
+                    <label class="sr-only" for="newsletter-email">{{ "Email address" | trans }}</label>
+                    <input
+                        id="newsletter-email"
+                        type="email"
+                        name="email"
+                        value="{{ old:email }}"
+                        required
+                        autocomplete="email"
+                        placeholder="{{ 'Your email address' | trans }}"
+                        class="min-w-0 flex-1 rounded-lg border border-gray-300 px-4 py-2 text-sm focus:border-gray-500 focus:outline-none"
+                    >
+                    <button
+                        type="submit"
+                        x-bind:disabled="state === 'loading'"
+                        class="inline-flex items-center justify-center gap-2 rounded-lg bg-gray-900 px-5 py-2 text-sm font-semibold text-white transition-colors hover:bg-gray-700 disabled:cursor-not-allowed disabled:opacity-70"
+                    >
+                        <span x-show="state !== 'loading'">{{ "Subscribe" | trans }}</span>
+                        <span x-show="state === 'loading'" x-cloak class="inline-flex items-center gap-2">
+                            <svg class="size-4 animate-spin" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 0 1 8-8V0C5.4 0 0 5.4 0 12h4z"></path>
+                            </svg>
+                            {{ "Subscribe" | trans }}
+                        </span>
+                    </button>
+                </div>
+
+                {{# Opt-in — must be accepted to subscribe. Match `name` to your form
+                    blueprint's opt-in field (the addon config's `opt_in_field`). #}}
+                <label class="flex items-start gap-2 text-sm text-gray-600">
+                    <input type="checkbox" name="newsletter_opt_in" value="1" required class="mt-0.5 size-4 shrink-0">
+                    <span>{{ "I agree to receive emails. Unsubscribe anytime." | trans }}</span>
+                </label>
+
+                {{# No-JS validation errors. #}}
+                {{ if errors }}
+                    <ul class="text-sm text-red-600" role="alert">
+                        {{ errors }}<li>{{ value }}</li>{{ /errors }}
+                    </ul>
+                {{ /if }}
+
+                {{# JS error (AJAX path). #}}
+                <p x-show="state === 'error'" x-cloak x-text="message" class="text-sm text-red-600" role="alert"></p>
+            </div>
+        {{ /if }}
+    {{ /form:newsletter }}
+</div>

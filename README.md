@@ -97,6 +97,70 @@ The job implements `ShouldQueue` and respects your app's `QUEUE_CONNECTION`:
 
 Emails are masked in logs (`j***@example.com`). Errors are never surfaced to the site visitor.
 
+## Frontend: smooth (AJAX) submissions
+
+This addon handles the server side — it does not render your form. It does, however, ship an optional **publishable [Alpine](https://alpinejs.dev) partial** that submits the native Statamic form with `fetch` for inline, no-reload feedback, with a no-JS fallback (a normal POST + `{{ if success }}`).
+
+### Ready-made partial
+
+Publish it:
+
+```bash
+php artisan vendor:publish --tag=statamic-keila-integration-views
+```
+
+That copies `newsletter.antlers.html` to `resources/views/vendor/statamic-keila-integration/`. Include it anywhere — e.g. your footer:
+
+```antlers
+{{ partial:statamic-keila-integration::newsletter }}
+```
+
+It is self-contained: the Alpine component lives inline in `x-data`, so there's **no JS import or build step** — Alpine (already on your page) picks it up. It's also toast-aware but not toast-dependent — on success it optionally calls `$store.toasts?.push(...)` and dispatches a `newsletter:subscribed` event, both degrading gracefully when absent.
+
+> You can include it **without** publishing — the addon auto-namespaces its views, so the same `{{ partial:statamic-keila-integration::newsletter }}` resolves to the packaged copy. Publishing just gives you an editable copy that takes precedence.
+
+Then customise the published copy:
+
+- **Styling** — the defaults use generic, portable Tailwind core utilities. Restyle freely with your own classes.
+- **Copy** — strings are hardcoded English run through the `| trans` modifier; translate them via your lang files, or swap in your own strings / globals.
+- **Fields** — match the form handle (`form:newsletter`) and the opt-in field `name` (`newsletter_opt_in`) to your own form blueprint.
+
+### Or build your own
+
+The partial relies on Statamic returning JSON when the form is submitted with an AJAX header:
+
+- success → `200 {"success": true, "redirect": …}`
+- validation error → `400 {"error": {"<field>": "<message>"}, "errors": [...]}`
+- detection → send the `X-Requested-With: XMLHttpRequest` header.
+
+A minimal progressive enhancement (the same idea as the shipped partial, distilled):
+
+```html
+<div x-data="{ state: 'idle', message: '' }"
+     x-on:submit.prevent="
+       state = 'loading';
+       const form = $event.target;
+       const res = await fetch(form.action, {
+         method: 'POST',
+         headers: { 'X-Requested-With': 'XMLHttpRequest', Accept: 'application/json' },
+         body: new FormData(form),
+       }).catch(() => null);
+       const data = res && await res.json().catch(() => ({}));
+       if (res?.ok && data?.success) { state = 'success'; form.reset(); }
+       else { state = 'error'; message = (data?.error && Object.values(data.error)[0]) || 'Please try again.'; }
+     ">
+  {{ form:newsletter }}
+    <div x-show="state !== 'success'"> … inputs + opt-in toggle … </div>
+    <p x-show="state === 'success'" x-cloak>You're subscribed!</p>
+  {{ /form:newsletter }}
+</div>
+```
+
+Notes:
+
+- **Copy:** this addon is **single opt-in** (the contact is set `active` immediately, no confirmation email), so say "You're subscribed!" — not "check your inbox to confirm."
+- **Static caching:** if you run Statamic's static caching, the form's `_token` must stay fresh. Submitting `new FormData(form)` picks up the token Statamic keeps live via its nocache layer — but test a real submit on a cached page (a stale token returns `419`).
+
 ## Spam protection
 
 Keila skips CAPTCHA for API calls, so keep spam protection on the form itself (honeypot / Cloudflare Turnstile). That is out of scope for this addon.
