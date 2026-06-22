@@ -2,11 +2,11 @@
 
 Subscribe Statamic form submitters to a self-hosted [Keila](https://www.keila.io) newsletter instance via Keila's HTTP API.
 
-When a mapped form is submitted with its opt-in toggle accepted, the addon creates a new Keila contact, updates an existing one, or reactivates a previously unsubscribed one — and tags it so it falls into a Keila segment. It is a **non-interfering side effect**: the native Statamic submission (storage + notification emails) always completes unchanged, regardless of what happens with Keila.
+When a mapped form is submitted with its opt-in toggle accepted, the addon creates a new Keila contact or updates an existing one, and tags it so it falls into a Keila segment. It is a **non-interfering side effect**: the native Statamic submission (storage + notification emails) always completes unchanged, regardless of what happens with Keila.
 
 ## Requirements
 
-- Statamic 6, Laravel 11+, PHP 8.2+
+- Statamic 6, Laravel 12.40+ or 13, PHP 8.3+
 - A Keila instance running **≥ v0.17.0** (the contacts API needs `id_type=email` lookups, added in 0.17.0)
 
 ## Installation
@@ -85,17 +85,25 @@ On an accepted submission, a queued job:
 2. Builds the contact's custom data by **merging onto whatever already exists** — the tag list becomes the union of existing + configured tags, and other custom fields are never clobbered.
 3. Then:
    - **New** contact → created with `status: active`.
-   - **Active / unsubscribed** contact → updated; status set to `active` (a fresh opt-in re-subscribes an unsubscribed contact).
-   - **Unreachable** contact (hard bounce) → tags/data updated, but status is **left as-is** — the addon will not resurrect a bounced address.
+   - **Active** contact → tags/data refreshed; status stays `active`.
+   - **Unsubscribed** contact → tags/data refreshed, but status is **left as-is**. A bare form submit will **not** re-subscribe someone who previously unsubscribed — that's an explicit withdrawal of consent, and because the API path bypasses Keila's double opt-in, anyone could submit a third party's address. Reactivation must go through a real confirmation step you implement.
+   - **Unreachable** contact (hard bounce) → tags/data refreshed, but status is **left as-is** — the addon will not resurrect a bounced address.
 
 ### Queue & reliability
 
 The job implements `ShouldQueue` and respects your app's `QUEUE_CONNECTION`:
 
-- With a real queue, the sync is deferred to a worker and retried (3 tries, exponential backoff) on 5xx / 429 / timeout failures. Permanent errors (401/422) are logged and dropped.
-- With `QUEUE_CONNECTION=sync`, it runs **after the HTTP response is sent**, so a slow or failing Keila never delays or breaks the visitor's submission.
+- With a **real queue worker**, the sync is deferred to the worker and retried (3 tries, exponential backoff) on 5xx / 429 / timeout failures. Permanent errors (400/403) are logged and dropped.
+- With `QUEUE_CONNECTION=sync`, it runs **after the HTTP response is sent**, so a slow or failing Keila never delays or breaks the visitor's submission. Note that `$tries` / `backoff()` only apply to a real worker — under `sync` the job runs **once**, so a transient Keila failure (5xx / 429 / timeout) is logged via `failed()` and the contact is left for the next submission rather than retried. Run a real queue if you need the retry behaviour.
 
 Emails are masked in logs (`j***@example.com`). Errors are never surfaced to the site visitor.
+
+### Consent & proof of consent
+
+This addon is **single opt-in**: contacts created via the API are set `active` immediately because the Keila API path **bypasses Keila's built-in double opt-in** (no confirmation email is sent). Consent enforcement is therefore the integration's responsibility:
+
+- On the **first** sync of a contact, the submitter's IP and a UTC ISO-8601 timestamp are recorded as `data.consent_ip`, `data.consent_at`, and `data.consent_source` (the form handle) — a basic audit trail. The original record is **preserved** on later re-submits, so a return visit can't overwrite it.
+- A submitted opt-in only proves the submitter ticked a box, not that they own the address. If you need verifiable consent — and to re-subscribe anyone who has unsubscribed — add your own email-confirmation step around this addon; a bare form submit will not do it.
 
 ## Frontend: smooth (AJAX) submissions
 

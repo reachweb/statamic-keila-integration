@@ -34,16 +34,21 @@ class SyncContactToKeila implements ShouldQueue
      *     tags: array<int, string>,
      *     source: ?string,
      *     form: string,
+     *     consent_ip?: ?string,
+     *     consent_at?: ?string,
      * }  $payload
      */
     public function __construct(public array $payload) {}
 
     /**
+     * Retry backoff in seconds. With $tries = 3 only two retries ever run, so
+     * the array is kept at $tries − 1 entries (a third would be dead).
+     *
      * @return array<int, int>
      */
     public function backoff(): array
     {
-        return [10, 30, 60];
+        return [10, 30];
     }
 
     public function handle(): void
@@ -90,15 +95,20 @@ class SyncContactToKeila implements ShouldQueue
     {
         $status = $existing['status'] ?? 'active';
 
-        // Never resurrect a bounced/unreachable contact — only flip to active
-        // for genuine opt-ins (new, active, or a re-consenting unsubscribe).
-        $newStatus = $status === 'unreachable' ? null : 'active';
+        // Never let a bare form submit flip a non-active contact back to active.
+        // An opt-in toggle only proves the submitter ticked a box, not that they
+        // own the address — so neither a hard-bounced (unreachable) contact nor
+        // one that previously unsubscribed (an explicit withdrawal of consent)
+        // is resurrected here. We still refresh their tags/data; status is left
+        // untouched (passing null omits it from the update). Reactivating an
+        // unsubscribe must go through a real confirmation step, not this path.
+        $newStatus = in_array($status, ['unreachable', 'unsubscribed'], true) ? null : 'active';
 
         $client->update($this->payload['email'], $this->attributes($existing, $newStatus));
 
         $outcome = match ($status) {
             'unreachable' => 'skipped-unreachable',
-            'unsubscribed' => 'reactivated',
+            'unsubscribed' => 'skipped-unsubscribed',
             default => 'updated',
         };
 
@@ -127,6 +137,22 @@ class SyncContactToKeila implements ShouldQueue
         if (! blank($this->payload['source'] ?? null)) {
             $data['source'] = $this->payload['source'];
         }
+
+        // Consent audit trail (GDPR/CAN-SPAM proof of consent). Record it the
+        // first time we see this contact and preserve the original on every
+        // re-submit, so a later (possibly third-party) submission can never
+        // overwrite the legally meaningful first record. The array_merge above
+        // already carried any existing consent_* across, so `??=` only fills the
+        // gaps on a genuinely new contact.
+        if (! blank($this->payload['consent_at'] ?? null)) {
+            $data['consent_at'] ??= $this->payload['consent_at'];
+        }
+
+        if (! blank($this->payload['consent_ip'] ?? null)) {
+            $data['consent_ip'] ??= $this->payload['consent_ip'];
+        }
+
+        $data['consent_source'] ??= $this->payload['form'];
 
         // top already contains only non-empty mapped top-level fields.
         $attributes = $this->payload['top'];

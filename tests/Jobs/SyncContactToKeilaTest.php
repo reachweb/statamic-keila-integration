@@ -4,6 +4,7 @@ namespace Reachweb\StatamicKeilaIntegration\Tests\Jobs;
 
 use Illuminate\Http\Client\Request;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Log;
 use Reachweb\StatamicKeilaIntegration\Exceptions\KeilaTransientException;
 use Reachweb\StatamicKeilaIntegration\Jobs\SyncContactToKeila;
 use Reachweb\StatamicKeilaIntegration\Tests\TestCase;
@@ -31,6 +32,8 @@ class SyncContactToKeilaTest extends TestCase
             'tags' => ['newsletter', 'kosaktis-website'],
             'source' => 'kosaktis-footer',
             'form' => 'newsletter',
+            'consent_ip' => '203.0.113.9',
+            'consent_at' => '2026-06-21T10:00:00+00:00',
         ], $overrides);
     }
 
@@ -62,6 +65,9 @@ class SyncContactToKeilaTest extends TestCase
                 && data_get($body, 'data.first_name') === 'Jane'
                 && data_get($body, 'data.data.room_interest') === 'Sea View'
                 && data_get($body, 'data.data.source') === 'kosaktis-footer'
+                && data_get($body, 'data.data.consent_ip') === '203.0.113.9'
+                && data_get($body, 'data.data.consent_at') === '2026-06-21T10:00:00+00:00'
+                && data_get($body, 'data.data.consent_source') === 'newsletter'
                 && in_array('newsletter', data_get($body, 'data.data.tags'), true)
                 && in_array('kosaktis-website', data_get($body, 'data.data.tags'), true);
         });
@@ -74,7 +80,12 @@ class SyncContactToKeilaTest extends TestCase
                 ? Http::response(['data' => [
                     'id' => 'c_1',
                     'status' => 'active',
-                    'data' => ['tags' => ['existing-tag'], 'city' => 'Kos'],
+                    'data' => [
+                        'tags' => ['existing-tag'],
+                        'city' => 'Kos',
+                        'consent_at' => '2020-01-01T00:00:00+00:00',
+                        'consent_ip' => '198.51.100.1',
+                    ],
                 ]], 200)
                 : Http::response(['data' => ['id' => 'c_1', 'status' => 'active']], 200);
         });
@@ -94,22 +105,41 @@ class SyncContactToKeilaTest extends TestCase
                 && in_array('newsletter', $tags, true)
                 && in_array('kosaktis-website', $tags, true)
                 && data_get($request->data(), 'data.data.city') === 'Kos'          // preserved
-                && data_get($request->data(), 'data.data.room_interest') === 'Sea View';
+                && data_get($request->data(), 'data.data.room_interest') === 'Sea View'
+                // The original proof of consent is preserved, never overwritten
+                // by the re-submit's fresher consent_at/consent_ip.
+                && data_get($request->data(), 'data.data.consent_at') === '2020-01-01T00:00:00+00:00'
+                && data_get($request->data(), 'data.data.consent_ip') === '198.51.100.1'
+                // consent_source was absent on the existing contact, so it's
+                // backfilled with the form handle.
+                && data_get($request->data(), 'data.data.consent_source') === 'newsletter';
         });
     }
 
-    public function test_unsubscribed_contact_is_reactivated(): void
+    public function test_unsubscribed_contact_is_not_reactivated_by_a_bare_submit(): void
     {
+        // A previous unsubscribe is an explicit withdrawal of consent; a public
+        // form submit must not silently flip it back to active (a third party
+        // could enter someone else's address). Tags/data are still refreshed.
         Http::fake(function (Request $request) {
             return $request->method() === 'GET'
                 ? Http::response(['data' => ['id' => 'c_1', 'status' => 'unsubscribed', 'data' => []]], 200)
-                : Http::response(['data' => ['id' => 'c_1', 'status' => 'active']], 200);
+                : Http::response(['data' => ['id' => 'c_1', 'status' => 'unsubscribed']], 200);
         });
 
         $this->runJob($this->payload());
 
-        Http::assertSent(fn (Request $request) => $request->method() === 'PUT'
-            && data_get($request->data(), 'data.status') === 'active');
+        Http::assertSent(function (Request $request) {
+            if ($request->method() !== 'PUT') {
+                return false;
+            }
+
+            // Status must be omitted entirely so Keila leaves it unsubscribed,
+            // but tags/data are still refreshed (the update isn't skipped).
+            return ! array_key_exists('status', (array) data_get($request->data(), 'data'))
+                && in_array('newsletter', (array) data_get($request->data(), 'data.data.tags'), true)
+                && data_get($request->data(), 'data.data.room_interest') === 'Sea View';
+        });
     }
 
     public function test_unreachable_contact_is_not_reactivated(): void
@@ -180,7 +210,11 @@ class SyncContactToKeilaTest extends TestCase
             }
 
             if ($request->method() === 'POST') {
-                return Http::response(['errors' => ['email' => ['has already been taken']]], 422);
+                // Real Keila returns a 400 changeset error for a duplicate email,
+                // never 409/422. See KeilaClient::isAlreadyExists().
+                return Http::response([
+                    'errors' => [['status' => '400', 'title' => 'Validation failed', 'detail' => 'has already been taken']],
+                ], 400);
             }
 
             return Http::response(['data' => ['id' => 'c_1', 'status' => 'active']], 200);
@@ -203,5 +237,23 @@ class SyncContactToKeilaTest extends TestCase
         $this->runJob($this->payload());
 
         Http::assertNothingSent();
+    }
+
+    public function test_the_email_is_masked_in_logs(): void
+    {
+        Http::fake(function (Request $request) {
+            return $request->method() === 'GET'
+                ? Http::response('', 404)
+                : Http::response(['data' => ['id' => 'c_1', 'status' => 'active']], 200);
+        });
+
+        Log::spy();
+
+        $this->runJob($this->payload());
+
+        Log::shouldHaveReceived('info')->withArgs(function (string $message, array $context) {
+            return ($context['email'] ?? null) === 'j***@example.com'
+                && ! str_contains(json_encode($context), 'jane@example.com');
+        });
     }
 }

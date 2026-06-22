@@ -122,16 +122,20 @@ class KeilaClient
     }
 
     /**
-     * A create conflict (email already taken) surfaces as a 409, or a 422
-     * changeset error mentioning the email. Either means "exists" -> upsert.
+     * A create conflict (email already taken) surfaces as an HTTP 400 changeset
+     * error whose detail mentions the email ("has already been taken"). Keila
+     * routes all contact validation errors through a 400, so we also tolerate
+     * 409/422 defensively. The substring guard separates a duplicate-email 400
+     * from other 400s (malformed body, oversized custom data, invalid email),
+     * which must still fall through to throwForStatus() as permanent.
      */
     protected function isAlreadyExists(Response $response): bool
     {
-        if (! in_array($response->status(), [409, 422], true)) {
+        if (! in_array($response->status(), [400, 409, 422], true)) {
             return false;
         }
 
-        $body = Str::lower(json_encode($response->json() ?? []) ?: '');
+        $body = Str::lower($response->body());
 
         return Str::contains($body, ['has already been taken', 'already exists', 'already taken']);
     }

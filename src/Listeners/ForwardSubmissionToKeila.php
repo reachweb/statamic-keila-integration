@@ -69,6 +69,12 @@ class ForwardSubmissionToKeila
             return;
         }
 
+        // Proof of consent, captured HERE while the request is still alive —
+        // request()->ip() is null on the worker/afterResponse() path, so it
+        // must be read now and threaded into the payload. consent_at is the
+        // submission moment in UTC ISO-8601.
+        $request = request();
+
         // afterResponse(): under `sync` this runs once the response is flushed
         // and the native emails have sent, so a slow/failing Keila can never
         // delay or break the visitor's submission. Under a real queue it's
@@ -80,6 +86,8 @@ class ForwardSubmissionToKeila
             'tags' => array_values((array) ($config['tags'] ?? [])),
             'source' => $config['source'] ?? null,
             'form' => $handle,
+            'consent_ip' => $request->ip(),
+            'consent_at' => now()->utc()->toIso8601String(),
         ])->afterResponse();
     }
 

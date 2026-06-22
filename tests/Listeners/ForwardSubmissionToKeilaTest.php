@@ -57,7 +57,10 @@ class ForwardSubmissionToKeilaTest extends TestCase
                 && $job->payload['top']['first_name'] === 'Jane'
                 && $job->payload['data']['room_interest'] === 'Sea View'
                 && in_array('newsletter', $job->payload['tags'], true)
-                && $job->payload['source'] === 'footer';
+                && $job->payload['source'] === 'footer'
+                // Proof of consent is captured at dispatch time (request alive).
+                && array_key_exists('consent_ip', $job->payload)
+                && str_ends_with($job->payload['consent_at'], '+00:00');
         });
     }
 
